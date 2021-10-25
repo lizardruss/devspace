@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"runtime"
 	"strings"
 
 	"github.com/loft-sh/devspace/pkg/devspace/command"
@@ -15,6 +16,7 @@ import (
 	"github.com/loft-sh/devspace/pkg/devspace/plugin"
 	"github.com/loft-sh/devspace/pkg/devspace/services"
 	"github.com/loft-sh/devspace/pkg/util/exit"
+	"github.com/sirupsen/logrus"
 	"mvdan.cc/sh/v3/interp"
 
 	"github.com/loft-sh/devspace/pkg/devspace/build"
@@ -29,7 +31,6 @@ import (
 
 	"github.com/mgutz/ansi"
 	"github.com/pkg/errors"
-	"github.com/sirupsen/logrus"
 )
 
 // Manager can update, build, deploy and purge dependencies.
@@ -106,7 +107,7 @@ type ResolveOptions struct {
 func (m *manager) ResolveAll(options ResolveOptions) ([]types.Dependency, error) {
 	dependencies, err := m.handleDependencies(options.SkipDependencies, options.Dependencies, false, options.UpdateDependencies, options.Silent, options.Verbose, "Resolve", func(dependency *Dependency, log log.Logger) error {
 		return nil
-	})
+	}, 1)
 	if err != nil {
 		return nil, err
 	}
@@ -140,7 +141,7 @@ func (m *manager) Command(options CommandOptions) error {
 
 		found = true
 		return ExecuteCommand(dependency.localConfig.Config().Commands, options.Command, options.Args, os.Stdout, os.Stderr)
-	})
+	}, 1)
 	if !found {
 		return fmt.Errorf("couldn't find dependency %s", options.Dependency)
 	}
@@ -179,7 +180,7 @@ type BuildOptions struct {
 func (m *manager) BuildAll(options BuildOptions) ([]types.Dependency, error) {
 	return m.handleDependencies(options.SkipDependencies, options.Dependencies, false, options.UpdateDependencies, false, options.Verbose, "Build", func(dependency *Dependency, log log.Logger) error {
 		return dependency.Build(options.ForceDeployDependencies, &options.BuildOptions, log)
-	})
+	}, options.BuildOptions.MaxConcurrentBuilds)
 }
 
 // DeployOptions has all options for deploying all dependencies
@@ -204,13 +205,8 @@ func (m *manager) DeployAll(options DeployOptions) ([]types.Dependency, error) {
 	}
 
 	dependencies, err := m.handleDependencies(options.SkipDependencies, options.Dependencies, false, options.UpdateDependencies, false, options.Verbose, "Deploy", func(dependency *Dependency, log log.Logger) error {
-		err := dependency.Deploy(options.ForceDeployDependencies, options.SkipBuild, options.SkipDeploy, options.ForceDeploy, &options.BuildOptions, log)
-		if err != nil {
-			return err
-		}
-
-		return nil
-	})
+		return dependency.Deploy(options.ForceDeployDependencies, options.SkipBuild, options.SkipDeploy, options.ForceDeploy, &options.BuildOptions, log)
+	}, options.BuildOptions.MaxConcurrentBuilds)
 	if err != nil {
 		pluginErr := hook.ExecuteHooks(m.client, m.config, nil, map[string]interface{}{"error": err}, m.log, "error:deployDependencies")
 		if pluginErr != nil {
@@ -239,7 +235,7 @@ type PurgeOptions struct {
 func (m *manager) PurgeAll(options PurgeOptions) ([]types.Dependency, error) {
 	return m.handleDependencies(options.SkipDependencies, options.Dependencies, true, false, false, options.Verbose, "Purge", func(dependency *Dependency, log log.Logger) error {
 		return dependency.Purge(log)
-	})
+	}, 1)
 }
 
 // RenderOptions has all options for rendering all dependencies
@@ -257,10 +253,10 @@ type RenderOptions struct {
 func (m *manager) RenderAll(options RenderOptions) ([]types.Dependency, error) {
 	return m.handleDependencies(options.SkipDependencies, options.Dependencies, false, options.UpdateDependencies, false, options.Verbose, "Render", func(dependency *Dependency, log log.Logger) error {
 		return dependency.Render(options.SkipBuild, &options.BuildOptions, options.Writer, log)
-	})
+	}, 1)
 }
 
-func (m *manager) handleDependencies(skipDependencies, filterDependencies []string, reverse, updateDependencies, silent, verbose bool, actionName string, action func(dependency *Dependency, log log.Logger) error) ([]types.Dependency, error) {
+func (m *manager) handleDependencies(skipDependencies, filterDependencies []string, reverse, updateDependencies, silent, verbose bool, actionName string, action func(dependency *Dependency, log log.Logger) error, concurrency int) ([]types.Dependency, error) {
 	if m.config == nil || m.config.Config() == nil || len(m.config.Config().Dependencies) == 0 {
 		return nil, nil
 	}
@@ -270,7 +266,7 @@ func (m *manager) handleDependencies(skipDependencies, filterDependencies []stri
 	}
 
 	// Resolve all dependencies
-	dependencies, err := m.resolver.Resolve(updateDependencies)
+	dependencyTree, err := m.resolver.Resolve(updateDependencies)
 	if err != nil {
 		return nil, errors.Wrap(err, "resolve dependencies")
 	}
@@ -278,52 +274,41 @@ func (m *manager) handleDependencies(skipDependencies, filterDependencies []stri
 	defer m.log.StopWait()
 
 	if !silent {
-		m.log.Donef("Resolved %d dependencies", len(dependencies))
+		m.log.Donef("Resolved %d dependencies", dependencyTree.len())
 	}
 	if !silent && !verbose {
 		m.log.Infof("To display the complete dependency execution log run with the '--verbose-dependencies' flag")
 	}
 
 	// Execute all dependencies
-	i := 0
-	if reverse {
-		i = len(dependencies) - 1
-	}
-
-	numDependencies := len(dependencies)
+	executedDependencies := []types.Dependency{}
+	numDependencies := dependencyTree.len()
 	if len(filterDependencies) > 0 {
 		numDependencies = len(filterDependencies)
 	}
-
-	executedDependencies := []types.Dependency{}
 	if !silent && !verbose {
 		m.log.StartWait(fmt.Sprintf("%s %d dependencies", actionName, numDependencies))
 	}
-	for i >= 0 && i < len(dependencies) {
-		var (
-			dependency       = dependencies[i]
-			buff             = &bytes.Buffer{}
-			dependencyLogger = m.log
-		)
 
-		// Increase / Decrease counter
-		if reverse {
-			i--
-		} else {
-			i++
+	performAction := func(n *node) error {
+		if n == dependencyTree.Root {
+			return nil
 		}
 
-		// Check if we should act on this dependency
+		dependency := n.Dependency
 		if !foundDependency(dependency.Name(), filterDependencies) {
-			continue
-		} else if skipDependency(dependency.Name(), skipDependencies) {
-			m.log.Infof("Skip dependency %s", dependency.Name())
-			continue
+			return nil
 		}
 
-		// If not verbose log to a stream
+		if skipDependency(dependency.Name(), skipDependencies) {
+			m.log.Infof("Skip dependency %s", dependency.Name())
+			return nil
+		}
+
+		logStream := &bytes.Buffer{}
+		dependencyLogger := m.log
 		if !verbose {
-			dependencyLogger = log.NewStreamLogger(buff, logrus.InfoLevel)
+			dependencyLogger = log.NewStreamLogger(logStream, logrus.InfoLevel)
 		}
 
 		if dependency.Config() != nil {
@@ -333,7 +318,7 @@ func (m *manager) handleDependencies(skipDependencies, filterDependencies []stri
 				"dependency_config_path": dependency.Config().Path(),
 			}, hook.EventsForSingle("before:"+strings.ToLower(actionName)+"Dependency", dependency.Name()).With("dependencies.before"+actionName)...)
 			if pluginErr != nil {
-				return nil, pluginErr
+				return pluginErr
 			}
 		}
 
@@ -346,11 +331,11 @@ func (m *manager) handleDependencies(skipDependencies, filterDependencies []stri
 					"dependency_config_path": dependency.Config().Path(),
 				}, hook.EventsForSingle("error:"+strings.ToLower(actionName)+"Dependency", dependency.Name()).With("dependencies.error"+actionName)...)
 				if pluginErr != nil {
-					return nil, pluginErr
+					return pluginErr
 				}
 			}
 
-			return nil, errors.Wrapf(err, "%s dependency %s error %s", actionName, dependency.Name(), buff.String())
+			return errors.Wrapf(err, "%s dependency %s error %s", actionName, dependency.Name(), logStream.String())
 		}
 
 		if dependency.Config() != nil {
@@ -360,7 +345,7 @@ func (m *manager) handleDependencies(skipDependencies, filterDependencies []stri
 				"dependency_config_path": dependency.Config().Path(),
 			}, hook.EventsForSingle("after:"+strings.ToLower(actionName)+"Dependency", dependency.Name()).With("dependencies.after"+actionName)...)
 			if pluginErr != nil {
-				return nil, pluginErr
+				return pluginErr
 			}
 		}
 
@@ -368,8 +353,78 @@ func (m *manager) handleDependencies(skipDependencies, filterDependencies []stri
 		if !silent {
 			m.log.Donef("%s dependency %s completed", actionName, dependency.Name())
 		}
+
+		return nil
 	}
-	m.log.StopWait()
+
+	if concurrency == 0 {
+		concurrency = runtime.NumCPU()
+	}
+	fmt.Printf("Concurrency: %d\n", concurrency)
+
+	visited := map[string]*node{}
+	scheduler := NewScheduler(concurrency, func() (func() error, error) {
+		if reverse {
+			nextNode, err := dependencyTree.preOrderSearch(dependencyTree.Root, func(n *node) (bool, error) {
+				if n == dependencyTree.Root {
+					return false, nil
+				}
+
+				if visited[n.ID] == nil {
+					visited[n.ID] = n
+					return true, nil
+				}
+
+				return false, nil
+			})
+			if err != nil {
+				return nil, err
+			}
+
+			if nextNode != nil {
+				return func() error {
+					fmt.Println(nextNode.Dependency.localPath)
+					return performAction(nextNode)
+				}, nil
+			}
+		} else {
+			nextNode, err := dependencyTree.postOrderSearch(dependencyTree.Root, func(n *node) (bool, error) {
+				if n == dependencyTree.Root {
+					return false, nil
+				}
+
+				if len(n.childs) == 0 {
+					if visited[n.ID] == nil {
+						visited[n.ID] = n
+						return true, nil
+					}
+
+					return false, nil
+				}
+				return false, nil
+			})
+			if err != nil {
+				return nil, err
+			}
+
+			if nextNode != nil {
+				return func() error {
+					fmt.Println(nextNode.Dependency.localPath)
+					err := performAction(nextNode)
+					dependencyTree.removeNode(nextNode.ID)
+					return err
+				}, nil
+			}
+		}
+
+		return nil, nil
+	})
+
+	err = scheduler.Run()
+	if err != nil {
+		return nil, err
+	}
+
 	if !silent {
 		if len(executedDependencies) > 0 {
 			m.log.Donef("Successfully processed %d dependencies", len(executedDependencies))

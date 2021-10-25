@@ -25,25 +25,51 @@ func newGraph(root *node) *graph {
 
 // node is a node in a graph
 type node struct {
-	ID   string
-	Data interface{}
+	ID         string
+	Dependency *Dependency
 
 	parents []*node
 	childs  []*node
 }
 
-func newNode(id string, data interface{}) *node {
+func newNode(id string, data *Dependency) *node {
 	return &node{
-		ID:   id,
-		Data: data,
+		ID:         id,
+		Dependency: data,
 
 		parents: make([]*node, 0, 1),
 		childs:  make([]*node, 0, 1),
 	}
 }
 
+type stack []*node
+
+func (s *stack) isEmpty() bool {
+	return len(*s) == 0
+}
+
+func (s *stack) push(n *node) {
+	*s = append(*s, n)
+}
+
+func (s *stack) pop() (*node, bool) {
+	if s.isEmpty() {
+		return nil, false
+	} else {
+		index := len(*s) - 1
+		element := (*s)[index]
+		*s = (*s)[:index]
+		return element, true
+	}
+}
+
+// len returns the number of dependencies, minus the root node
+func (g *graph) len() int {
+	return len(g.Nodes) - 1
+}
+
 // insertNodeAt inserts a new node at the given parent position
-func (g *graph) insertNodeAt(parentID string, id string, data interface{}) (*node, error) {
+func (g *graph) insertNodeAt(parentID string, id string, data *Dependency) (*node, error) {
 	parentNode, ok := g.Nodes[parentID]
 	if !ok {
 		return nil, errors.Errorf("Parent %s does not exist", parentID)
@@ -93,6 +119,67 @@ func (g *graph) removeNode(id string) error {
 	}
 
 	return nil
+}
+
+func (g *graph) preOrderSearch(start *node, predicate func(node *node) (bool, error)) (*node, error) {
+	if start == nil {
+		return nil, nil
+	}
+
+	nodeStack := &stack{}
+	nodeStack.push(start)
+
+	for !nodeStack.isEmpty() {
+		currNode, _ := nodeStack.pop()
+
+		found, err := predicate(currNode)
+		if found {
+			return currNode, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+
+		for idx := len(currNode.childs) - 1; idx >= 0; idx-- {
+			node := currNode.childs[idx]
+			nodeStack.push(node)
+		}
+	}
+
+	return nil, nil
+}
+
+func (g *graph) postOrderSearch(start *node, predicate func(node *node) (bool, error)) (*node, error) {
+	if start == nil {
+		return nil, nil
+	}
+
+	nodeStack := &stack{}
+	nodeStack.push(start)
+
+	outputStack := &stack{}
+	for !nodeStack.isEmpty() {
+		currNode, _ := nodeStack.pop()
+
+		outputStack.push(currNode)
+
+		for _, node := range currNode.childs {
+			nodeStack.push(node)
+		}
+	}
+
+	for !outputStack.isEmpty() {
+		currNode, _ := outputStack.pop()
+		found, err := predicate(currNode)
+		if found {
+			return currNode, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	return nil, nil
 }
 
 // getNextLeaf returns the next leaf in the graph from node start

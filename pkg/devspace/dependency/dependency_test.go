@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/loft-sh/devspace/pkg/devspace/build"
-	fakebuild "github.com/loft-sh/devspace/pkg/devspace/build/testing"
 	"github.com/loft-sh/devspace/pkg/devspace/config"
 	"github.com/loft-sh/devspace/pkg/devspace/config/constants"
 	"github.com/loft-sh/devspace/pkg/devspace/config/generated"
@@ -15,8 +13,6 @@ import (
 	"github.com/loft-sh/devspace/pkg/devspace/config/loader"
 	"github.com/loft-sh/devspace/pkg/devspace/config/versions/latest"
 	fakedeploy "github.com/loft-sh/devspace/pkg/devspace/deploy/testing"
-	fakekube "github.com/loft-sh/devspace/pkg/devspace/kubectl/testing"
-	fakeregistry "github.com/loft-sh/devspace/pkg/devspace/pullsecrets/testing"
 	"github.com/loft-sh/devspace/pkg/util/fsutil"
 	"github.com/loft-sh/devspace/pkg/util/hash"
 	"github.com/loft-sh/devspace/pkg/util/log"
@@ -25,14 +21,14 @@ import (
 )
 
 type fakeResolver struct {
-	resolvedDependencies []*Dependency
+	dependencyTree *graph
 }
 
 var replaceWithHash = "replaceThisWithHash"
 
-func (r *fakeResolver) Resolve(update bool) ([]*Dependency, error) {
-	for _, dep := range r.resolvedDependencies {
-
+func (r *fakeResolver) Resolve(update bool) (*graph, error) {
+	r.dependencyTree.preOrderSearch(r.dependencyTree.Root, func(n *node) (bool, error) {
+		dep := n.Dependency
 		directoryHash, _ := hash.DirectoryExcludes(dep.localPath, []string{".git", ".devspace"}, true)
 		for _, profile := range dep.dependencyCache.Profiles {
 			for key, val := range profile.Dependencies {
@@ -44,9 +40,9 @@ func (r *fakeResolver) Resolve(update bool) ([]*Dependency, error) {
 
 		dep.deployController = &fakedeploy.FakeController{}
 		dep.generatedSaver = &fakegeneratedloader.Loader{}
-	}
-
-	return r.resolvedDependencies, nil
+		return false, nil
+	})
+	return r.dependencyTree, nil
 }
 
 type updateAllTestCase struct {
@@ -153,10 +149,10 @@ func TestUpdateAll(t *testing.T) {
 type buildAllTestCase struct {
 	name string
 
-	files                map[string]string
-	dependencyTasks      []*latest.DependencyConfig
-	resolvedDependencies []*Dependency
-	options              BuildOptions
+	files           map[string]string
+	dependencyTasks []*latest.DependencyConfig
+	dependencyTree  *graph
+	options         BuildOptions
 
 	expectedErr string
 }
@@ -202,8 +198,8 @@ func TestBuildAll(t *testing.T) {
 			dependencyTasks: []*latest.DependencyConfig{
 				{},
 			},
-			resolvedDependencies: []*Dependency{
-				{
+			dependencyTree: newGraph(
+				newNode("./", &Dependency{
 					localPath:        "./",
 					dependencyConfig: &latest.DependencyConfig{},
 					dependencyCache: &generated.Config{
@@ -216,8 +212,8 @@ func TestBuildAll(t *testing.T) {
 							},
 						},
 					},
-				},
-			},
+				}),
+			),
 		},
 	}
 
@@ -233,7 +229,7 @@ func TestBuildAll(t *testing.T) {
 			}, nil, nil, "")),
 			log: log.Discard,
 			resolver: &fakeResolver{
-				resolvedDependencies: testCase.resolvedDependencies,
+				dependencyTree: testCase.dependencyTree,
 			},
 		}
 
@@ -254,10 +250,10 @@ func TestBuildAll(t *testing.T) {
 type deployAllTestCase struct {
 	name string
 
-	files                map[string]string
-	dependencyTasks      []*latest.DependencyConfig
-	resolvedDependencies []*Dependency
-	options              DeployOptions
+	files           map[string]string
+	dependencyTasks []*latest.DependencyConfig
+	dependencyTree  *graph
+	options         DeployOptions
 
 	expectedErr string
 }
@@ -303,8 +299,8 @@ func TestDeployAll(t *testing.T) {
 			dependencyTasks: []*latest.DependencyConfig{
 				{},
 			},
-			resolvedDependencies: []*Dependency{
-				{
+			dependencyTree: newGraph(
+				newNode("./", &Dependency{
 					localPath:        "./",
 					dependencyConfig: &latest.DependencyConfig{},
 					dependencyCache: &generated.Config{
@@ -317,8 +313,8 @@ func TestDeployAll(t *testing.T) {
 							},
 						},
 					},
-				},
-			},
+				}),
+			),
 		},
 	}
 
@@ -334,7 +330,7 @@ func TestDeployAll(t *testing.T) {
 			}, nil, nil, "")),
 			log: log.Discard,
 			resolver: &fakeResolver{
-				resolvedDependencies: testCase.resolvedDependencies,
+				dependencyTree: testCase.dependencyTree,
 			},
 		}
 
@@ -355,10 +351,10 @@ func TestDeployAll(t *testing.T) {
 type purgeAllTestCase struct {
 	name string
 
-	files                map[string]string
-	dependencyTasks      []*latest.DependencyConfig
-	resolvedDependencies []*Dependency
-	verboseParam         bool
+	files           map[string]string
+	dependencyTasks []*latest.DependencyConfig
+	dependencyTree  *graph
+	verboseParam    bool
 
 	expectedErr string
 }
@@ -407,8 +403,8 @@ func TestPurgeAll(t *testing.T) {
 			dependencyTasks: []*latest.DependencyConfig{
 				{},
 			},
-			resolvedDependencies: []*Dependency{
-				{
+			dependencyTree: newGraph(
+				newNode("./", &Dependency{
 					localPath:        "./",
 					dependencyConfig: &latest.DependencyConfig{},
 					dependencyCache: &generated.Config{
@@ -421,8 +417,8 @@ func TestPurgeAll(t *testing.T) {
 							},
 						},
 					},
-				},
-			},
+				}),
+			),
 		},
 	}
 
@@ -438,7 +434,7 @@ func TestPurgeAll(t *testing.T) {
 			}, nil, nil, "")),
 			log: log.Discard,
 			resolver: &fakeResolver{
-				resolvedDependencies: testCase.resolvedDependencies,
+				dependencyTree: testCase.dependencyTree,
 			},
 		}
 
@@ -456,246 +452,244 @@ func TestPurgeAll(t *testing.T) {
 	}
 }
 
-type buildTestCase struct {
-	name string
+// type buildTestCase struct {
+// 	name string
 
-	files             map[string]string
-	dependency        *Dependency
-	skipPush          bool
-	forceDependencies bool
-	forceBuild        bool
+// 	files             map[string]string
+// 	dependencyTree    *graph
+// 	skipPush          bool
+// 	forceDependencies bool
+// 	forceBuild        bool
 
-	expectedErr string
-}
+// 	expectedErr string
+// }
 
-func TestBuild(t *testing.T) {
-	dir, err := ioutil.TempDir("", "testFolder")
-	if err != nil {
-		t.Fatalf("Error creating temporary directory: %v", err)
-	}
-	dir, err = filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+// func TestBuild(t *testing.T) {
+// 	dir, err := ioutil.TempDir("", "testFolder")
+// 	if err != nil {
+// 		t.Fatalf("Error creating temporary directory: %v", err)
+// 	}
+// 	dir, err = filepath.EvalSymlinks(dir)
+// 	if err != nil {
+// 		t.Fatal(err)
+// 	}
 
-	wdBackup, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting current working directory: %v", err)
-	}
-	err = os.Chdir(dir)
-	if err != nil {
-		t.Fatalf("Error changing working directory: %v", err)
-	}
+// 	wdBackup, err := os.Getwd()
+// 	if err != nil {
+// 		t.Fatalf("Error getting current working directory: %v", err)
+// 	}
+// 	err = os.Chdir(dir)
+// 	if err != nil {
+// 		t.Fatalf("Error changing working directory: %v", err)
+// 	}
 
-	// Delete temp folder
-	defer func() {
-		err = os.Chdir(wdBackup)
-		if err != nil {
-			t.Fatalf("Error changing dir back: %v", err)
-		}
-		err = os.RemoveAll(dir)
-		if err != nil {
-			t.Fatalf("Error removing dir: %v", err)
-		}
-	}()
+// 	// Delete temp folder
+// 	defer func() {
+// 		err = os.Chdir(wdBackup)
+// 		if err != nil {
+// 			t.Fatalf("Error changing dir back: %v", err)
+// 		}
+// 		err = os.RemoveAll(dir)
+// 		if err != nil {
+// 			t.Fatalf("Error removing dir: %v", err)
+// 		}
+// 	}()
 
-	testCases := []buildTestCase{
-		{
-			name: "Skipped",
-			dependency: &Dependency{
-				localPath: "./",
-				dependencyCache: &generated.Config{
-					ActiveProfile: "",
-					Profiles: map[string]*generated.CacheConfig{
-						"": {
-							Dependencies: map[string]string{
-								"": replaceWithHash,
-							},
-						},
-					},
-				},
-			},
-		},
-		{
-			name: "Build dependency",
-			dependency: &Dependency{
-				localPath:        "./",
-				dependencyConfig: &latest.DependencyConfig{},
-				dependencyCache: &generated.Config{
-					ActiveProfile: "",
-					Profiles: map[string]*generated.CacheConfig{
-						"": {
-							Dependencies: map[string]string{
-								"": "",
-							},
-						},
-					},
-				},
-				buildController: &fakebuild.FakeController{
-					BuiltImages: map[string]string{
-						"": "",
-					},
-				},
-			},
-			forceDependencies: true,
-		},
-	}
+// 	testCases := []buildTestCase{
+// 		{
+// 			name: "Skipped",
+// 			dependency: &Dependency{
+// 				localPath: "./",
+// 				dependencyCache: &generated.Config{
+// 					ActiveProfile: "",
+// 					Profiles: map[string]*generated.CacheConfig{
+// 						"": {
+// 							Dependencies: map[string]string{
+// 								"": replaceWithHash,
+// 							},
+// 						},
+// 					},
+// 				},
+// 			},
+// 		},
+// 		{
+// 			name: "Build dependency",
+// 			dependency: &Dependency{
+// 				localPath:        "./",
+// 				dependencyConfig: &latest.DependencyConfig{},
+// 				dependencyCache: &generated.Config{
+// 					ActiveProfile: "",
+// 					Profiles: map[string]*generated.CacheConfig{
+// 						"": {
+// 							Dependencies: map[string]string{
+// 								"": "",
+// 							},
+// 						},
+// 					},
+// 				},
+// 				buildController: &fakebuild.FakeController{
+// 					BuiltImages: map[string]string{
+// 						"": "",
+// 					},
+// 				},
+// 			},
+// 			forceDependencies: true,
+// 		},
+// 	}
 
-	for _, testCase := range testCases {
-		for path, content := range testCase.files {
-			err = fsutil.WriteToFile([]byte(content), path)
-			assert.NilError(t, err, "Error writing file in testCase %s", testCase.name)
-		}
+// 	for _, testCase := range testCases {
+// 		for path, content := range testCase.files {
+// 			err = fsutil.WriteToFile([]byte(content), path)
+// 			assert.NilError(t, err, "Error writing file in testCase %s", testCase.name)
+// 		}
 
-		dependencies, _ := (&fakeResolver{
-			resolvedDependencies: []*Dependency{
-				testCase.dependency,
-			},
-		}).Resolve(false)
-		dependency := dependencies[0]
+// 		dependencies, _ := (&fakeResolver{
+// 			dependencyTree: testCase.dependencyTree,
+// 		}).Resolve(false)
+// 		dependency := dependencies.Root.childs[0].Dependency
 
-		err = dependency.Build(testCase.forceDependencies, &build.Options{
-			SkipPush:     testCase.skipPush,
-			ForceRebuild: testCase.forceBuild,
-		}, log.Discard)
+// 		err = dependency.Build(testCase.forceDependencies, &build.Options{
+// 			SkipPush:     testCase.skipPush,
+// 			ForceRebuild: testCase.forceBuild,
+// 		}, log.Discard)
 
-		if testCase.expectedErr == "" {
-			assert.NilError(t, err, "Error purging all in testCase %s", testCase.name)
-		} else {
-			assert.Error(t, err, testCase.expectedErr, "Wrong or no error from PurgeALl in testCase %s", testCase.name)
-		}
+// 		if testCase.expectedErr == "" {
+// 			assert.NilError(t, err, "Error purging all in testCase %s", testCase.name)
+// 		} else {
+// 			assert.Error(t, err, testCase.expectedErr, "Wrong or no error from PurgeALl in testCase %s", testCase.name)
+// 		}
 
-		err = os.Chdir(dir)
-		assert.NilError(t, err, "Error changing workDir back in testCase %s", testCase.name)
-		for path := range testCase.files {
-			err = os.Remove(path)
-			assert.NilError(t, err, "Error removing file in testCase %s", testCase.name)
-		}
-	}
-}
+// 		err = os.Chdir(dir)
+// 		assert.NilError(t, err, "Error changing workDir back in testCase %s", testCase.name)
+// 		for path := range testCase.files {
+// 			err = os.Remove(path)
+// 			assert.NilError(t, err, "Error removing file in testCase %s", testCase.name)
+// 		}
+// 	}
+// }
 
-type deployTestCase struct {
-	name string
+// type deployTestCase struct {
+// 	name string
 
-	files             map[string]string
-	dependency        *Dependency
-	skipPush          bool
-	forceDependencies bool
-	skipBuild         bool
-	forceBuild        bool
-	skipDeploy        bool
-	forceDeploy       bool
+// 	files             map[string]string
+// 	dependencyTree    *graph
+// 	skipPush          bool
+// 	forceDependencies bool
+// 	skipBuild         bool
+// 	forceBuild        bool
+// 	skipDeploy        bool
+// 	forceDeploy       bool
 
-	expectedErr string
-}
+// 	expectedErr string
+// }
 
-func TestDeploy(t *testing.T) {
-	dir, err := ioutil.TempDir("", "testFolder")
-	if err != nil {
-		t.Fatalf("Error creating temporary directory: %v", err)
-	}
-	dir, err = filepath.EvalSymlinks(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
+// func TestDeploy(t *testing.T) {
+// 	dir, err := ioutil.TempDir("", "testFolder")
+// 	if err != nil {
+// 		t.Fatalf("Error creating temporary directory: %v", err)
+// 	}
+// 	dir, err = filepath.EvalSymlinks(dir)
+// 	if err != nil {
+// 		t.Fatal(err)
+// 	}
 
-	wdBackup, err := os.Getwd()
-	if err != nil {
-		t.Fatalf("Error getting current working directory: %v", err)
-	}
-	err = os.Chdir(dir)
-	if err != nil {
-		t.Fatalf("Error changing working directory: %v", err)
-	}
+// 	wdBackup, err := os.Getwd()
+// 	if err != nil {
+// 		t.Fatalf("Error getting current working directory: %v", err)
+// 	}
+// 	err = os.Chdir(dir)
+// 	if err != nil {
+// 		t.Fatalf("Error changing working directory: %v", err)
+// 	}
 
-	// Delete temp folder
-	defer func() {
-		err = os.Chdir(wdBackup)
-		if err != nil {
-			t.Fatalf("Error changing dir back: %v", err)
-		}
-		err = os.RemoveAll(dir)
-		if err != nil {
-			t.Fatalf("Error removing dir: %v", err)
-		}
-	}()
+// 	// Delete temp folder
+// 	defer func() {
+// 		err = os.Chdir(wdBackup)
+// 		if err != nil {
+// 			t.Fatalf("Error changing dir back: %v", err)
+// 		}
+// 		err = os.RemoveAll(dir)
+// 		if err != nil {
+// 			t.Fatalf("Error removing dir: %v", err)
+// 		}
+// 	}()
 
-	testCases := []deployTestCase{
-		{
-			name: "Skipped",
-			dependency: &Dependency{
-				localPath: "./",
-				dependencyCache: &generated.Config{
-					ActiveProfile: "",
-					Profiles: map[string]*generated.CacheConfig{
-						"": {
-							Dependencies: map[string]string{
-								"": replaceWithHash,
-							},
-						},
-					},
-				},
-			},
-		},
-		{
-			name: "Deploy dependency",
-			dependency: &Dependency{
-				localPath:        "./",
-				dependencyConfig: &latest.DependencyConfig{},
-				dependencyCache: &generated.Config{
-					ActiveProfile: "",
-					Profiles: map[string]*generated.CacheConfig{
-						"": {
-							Dependencies: map[string]string{
-								"": "",
-							},
-						},
-					},
-				},
-				kubeClient:     &fakekube.Client{},
-				registryClient: &fakeregistry.Client{},
-				buildController: &fakebuild.FakeController{
-					BuiltImages: map[string]string{
-						"": "",
-					},
-				},
-			},
-			forceDependencies: true,
-		},
-	}
+// 	testCases := []deployTestCase{
+// 		{
+// 			name: "Skipped",
+// 			dependency: &Dependency{
+// 				localPath: "./",
+// 				dependencyCache: &generated.Config{
+// 					ActiveProfile: "",
+// 					Profiles: map[string]*generated.CacheConfig{
+// 						"": {
+// 							Dependencies: map[string]string{
+// 								"": replaceWithHash,
+// 							},
+// 						},
+// 					},
+// 				},
+// 			},
+// 		},
+// 		{
+// 			name: "Deploy dependency",
+// 			dependency: &Dependency{
+// 				localPath:        "./",
+// 				dependencyConfig: &latest.DependencyConfig{},
+// 				dependencyCache: &generated.Config{
+// 					ActiveProfile: "",
+// 					Profiles: map[string]*generated.CacheConfig{
+// 						"": {
+// 							Dependencies: map[string]string{
+// 								"": "",
+// 							},
+// 						},
+// 					},
+// 				},
+// 				kubeClient:     &fakekube.Client{},
+// 				registryClient: &fakeregistry.Client{},
+// 				buildController: &fakebuild.FakeController{
+// 					BuiltImages: map[string]string{
+// 						"": "",
+// 					},
+// 				},
+// 			},
+// 			forceDependencies: true,
+// 		},
+// 	}
 
-	for _, testCase := range testCases {
-		for path, content := range testCase.files {
-			err = fsutil.WriteToFile([]byte(content), path)
-			assert.NilError(t, err, "Error writing file in testCase %s", testCase.name)
-		}
+// 	for _, testCase := range testCases {
+// 		for path, content := range testCase.files {
+// 			err = fsutil.WriteToFile([]byte(content), path)
+// 			assert.NilError(t, err, "Error writing file in testCase %s", testCase.name)
+// 		}
 
-		dependencies, _ := (&fakeResolver{
-			resolvedDependencies: []*Dependency{
-				testCase.dependency,
-			},
-		}).Resolve(false)
-		dependency := dependencies[0]
-		if dependency.localConfig == nil {
-			dependency.localConfig = config.NewConfig(nil, &latest.Config{}, nil, nil, constants.DefaultConfigPath)
-		}
+// 		dependencies, _ := (&fakeResolver{
+// 			resolvedDependencies: []*Dependency{
+// 				testCase.dependency,
+// 			},
+// 		}).Resolve(false)
+// 		dependency := dependencies[0]
+// 		if dependency.localConfig == nil {
+// 			dependency.localConfig = config.NewConfig(nil, &latest.Config{}, nil, nil, constants.DefaultConfigPath)
+// 		}
 
-		err = dependency.Deploy(testCase.forceDependencies, testCase.skipBuild, testCase.skipDeploy, testCase.forceDeploy, &build.Options{
-			SkipPush:     testCase.skipPush,
-			ForceRebuild: testCase.forceBuild,
-		}, log.Discard)
+// 		err = dependency.Deploy(testCase.forceDependencies, testCase.skipBuild, testCase.skipDeploy, testCase.forceDeploy, &build.Options{
+// 			SkipPush:     testCase.skipPush,
+// 			ForceRebuild: testCase.forceBuild,
+// 		}, log.Discard)
 
-		if testCase.expectedErr == "" {
-			assert.NilError(t, err, "Error purging all in testCase %s", testCase.name)
-		} else {
-			assert.Error(t, err, testCase.expectedErr, "Wrong or no error from PurgeALl in testCase %s", testCase.name)
-		}
+// 		if testCase.expectedErr == "" {
+// 			assert.NilError(t, err, "Error purging all in testCase %s", testCase.name)
+// 		} else {
+// 			assert.Error(t, err, testCase.expectedErr, "Wrong or no error from PurgeALl in testCase %s", testCase.name)
+// 		}
 
-		err = os.Chdir(dir)
-		assert.NilError(t, err, "Error changing workDir back in testCase %s", testCase.name)
-		for path := range testCase.files {
-			err = os.Remove(path)
-			assert.NilError(t, err, "Error removing file in testCase %s", testCase.name)
-		}
-	}
-}
+// 		err = os.Chdir(dir)
+// 		assert.NilError(t, err, "Error changing workDir back in testCase %s", testCase.name)
+// 		for path := range testCase.files {
+// 			err = os.Remove(path)
+// 			assert.NilError(t, err, "Error removing file in testCase %s", testCase.name)
+// 		}
+// 	}
+// }

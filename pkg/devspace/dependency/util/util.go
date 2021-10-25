@@ -34,16 +34,21 @@ func init() {
 	DependencyFolderPath = filepath.Join(homedir, filepath.FromSlash(DependencyFolder))
 }
 
-func DownloadDependency(ID, basePath string, source *latest.SourceConfig, update bool, log log.Logger) (localPath string, err error) {
+func DownloadDependency(basePath string, source *latest.SourceConfig, update bool, log log.Logger) (localPath string, err error) {
 	// Resolve source
 	if source.Git != "" {
 		gitPath := strings.TrimSpace(source.Git)
 
+		dependencyPath, err := gitRepoToDependencyPath(source)
+		if err != nil {
+			return "", errors.Wrap(err, "dependency path")
+		}
+
 		_ = os.MkdirAll(DependencyFolderPath, 0755)
-		localPath = filepath.Join(DependencyFolderPath, hash.String(ID))
+		localPath = filepath.Join(DependencyFolderPath, dependencyPath)
 
 		// Check if dependency exists
-		_, err := os.Stat(localPath)
+		_, err = os.Stat(localPath)
 		if err != nil {
 			update = true
 		}
@@ -67,16 +72,20 @@ func DownloadDependency(ID, basePath string, source *latest.SourceConfig, update
 				return "", errors.Wrap(err, "clone repository")
 			}
 
-			log.Donef("Pulled %s", ID)
+			log.Donef("Pulled %s", gitPath)
 		}
 	} else if source.Path != "" {
 		if isURL(source.Path) {
-			localPath = filepath.Join(DependencyFolderPath, hash.String(ID))
+			dependencyPath := urlToDependencyPath(source.Path)
+			localPath = filepath.Join(DependencyFolderPath, dependencyPath)
 			_ = os.MkdirAll(localPath, 0755)
 
 			// Check if dependency exists
 			configPath := filepath.Join(localPath, constants.DefaultConfigPath)
-			_, err := os.Stat(configPath)
+			if source.ConfigName != "" {
+				configPath = filepath.Join(localPath, source.ConfigName)
+			}
+			_, err = os.Stat(configPath)
 			if err != nil {
 				update = true
 			}
@@ -194,7 +203,7 @@ func GetParentProfileID(basePath string, source *latest.SourceConfig, profile st
 			return id
 		}
 
-		// Check if it's an git repo
+		// Check if it's a git repo
 		filePath := source.Path
 		if !filepath.IsAbs(source.Path) {
 			filePath = filepath.Join(basePath, source.Path)
@@ -225,4 +234,29 @@ func GetParentProfileID(basePath string, source *latest.SourceConfig, profile st
 
 func isURL(path string) bool {
 	return strings.HasPrefix(path, "http://") || strings.HasPrefix(path, "https://")
+}
+
+func urlToDependencyPath(url string) string {
+	dependencyPath := regexp.MustCompile(`^[^\:]+\://`).ReplaceAllString(url, "")
+	dependencyPath = regexp.MustCompile(`\.git\/?$`).ReplaceAllString(dependencyPath, "")
+	return dependencyPath
+}
+
+func gitRepoToDependencyPath(source *latest.SourceConfig) (string, error) {
+	if source.Git == "" {
+		return "", errors.Errorf("not a git repository source")
+	}
+
+	dependencyPath := filepath.ToSlash(urlToDependencyPath(source.Git))
+
+	// Append commit-ish path
+	if source.Revision != "" {
+		dependencyPath = filepath.Join(dependencyPath, source.Revision)
+	} else if source.Branch != "" {
+		dependencyPath = filepath.Join(dependencyPath, source.Branch)
+	} else if source.Tag != "" {
+		dependencyPath = filepath.Join(dependencyPath, source.Tag)
+	}
+
+	return dependencyPath, nil
 }

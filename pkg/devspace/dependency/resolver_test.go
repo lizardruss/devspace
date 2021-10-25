@@ -6,8 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/loft-sh/devspace/pkg/util/hash"
-
 	"github.com/loft-sh/devspace/pkg/devspace/config"
 	"github.com/loft-sh/devspace/pkg/devspace/dependency/util"
 
@@ -31,7 +29,6 @@ type resolverTestCase struct {
 	files                map[string]*latest.Config
 	dependencyTasks      []*latest.DependencyConfig
 	updateParam          bool
-	allowCyclic          bool
 	skipIds              bool
 	expectedDependencies []Dependency
 	expectedErr          string
@@ -124,14 +121,7 @@ func TestResolver(t *testing.T) {
 			},
 			expectedDependencies: []Dependency{
 				{
-					localPath: filepath.Join(util.DependencyFolderPath, hash.String(mustGetDependencyID(dir, &latest.DependencyConfig{
-						Name: "test",
-						Source: &latest.SourceConfig{
-							Git:      "https://github.com/devspace-cloud/example-dependency.git",
-							Revision: "f8b2aa8cf8ac03238a28e8f78382b214d619893f",
-							SubPath:  "mysubpath",
-						},
-					})), "mysubpath"),
+					localPath: filepath.Join(util.DependencyFolderPath, "github.com/devspace-cloud/example-dependency", "f8b2aa8cf8ac03238a28e8f78382b214d619893f", "mysubpath"),
 				},
 			},
 		},
@@ -170,7 +160,6 @@ func TestResolver(t *testing.T) {
 					},
 				},
 			},
-			allowCyclic: true,
 			expectedDependencies: []Dependency{
 				{
 					localPath: filepath.Join(dir, "dependency2"),
@@ -208,13 +197,22 @@ func TestResolver(t *testing.T) {
 			assert.Error(t, err, testCase.expectedErr, "Wrong or no error from Resolve in testCase %s", testCase.name)
 		}
 
-		assert.Equal(t, len(testCase.expectedDependencies), len(dependencies), "Wrong dependency length in testCase %s", testCase.name)
+		assert.Equal(t, len(testCase.expectedDependencies), dependencies.len(), "Wrong dependency length in testCase %s", testCase.name)
+		actualDependencies := []*Dependency{}
+		dependencies.postOrderSearch(dependencies.Root, func(n *node) (bool, error) {
+			if n == dependencies.Root {
+				return false, nil
+			}
+
+			actualDependencies = append(actualDependencies, n.Dependency)
+			return false, nil
+		})
 		for index, expected := range testCase.expectedDependencies {
 			if testCase.skipIds == false {
 				id, _ := util.GetDependencyID(dir, testCase.dependencyTasks[index])
-				assert.Equal(t, id, dependencies[index].id, "Dependency has wrong id in testCase %s", testCase.name)
+				assert.Equal(t, id, actualDependencies[index].id, "Dependency has wrong id in testCase %s", testCase.name)
 			}
-			assert.Equal(t, expected.localPath, dependencies[index].localPath, "Dependency has wrong local path in testCase %s", testCase.name)
+			assert.Equal(t, expected.localPath, actualDependencies[index].localPath, "Dependency has wrong local path in testCase %s", testCase.name)
 		}
 
 		for path := range testCase.files {
@@ -224,11 +222,6 @@ func TestResolver(t *testing.T) {
 		os.RemoveAll(util.DependencyFolderPath) //No error catch because it doesn't need to exist
 
 	}
-}
-
-func mustGetDependencyID(basePath string, config *latest.DependencyConfig) string {
-	id, _ := util.GetDependencyID(basePath, config)
-	return id
 }
 
 type getDependencyIDTestCase struct {

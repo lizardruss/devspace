@@ -9,15 +9,15 @@ import (
 	"github.com/loft-sh/devspace/pkg/devspace/build"
 	"github.com/loft-sh/devspace/pkg/devspace/config"
 	"github.com/loft-sh/devspace/pkg/devspace/dependency/types"
+	"github.com/loft-sh/devspace/pkg/devspace/dependency/util"
 	"github.com/loft-sh/devspace/pkg/devspace/deploy"
+	"github.com/loft-sh/devspace/pkg/devspace/docker"
 	"github.com/loft-sh/devspace/pkg/devspace/pullsecrets"
 
 	"github.com/loft-sh/devspace/pkg/devspace/config/constants"
 	"github.com/loft-sh/devspace/pkg/devspace/config/generated"
 	"github.com/loft-sh/devspace/pkg/devspace/config/loader"
 	"github.com/loft-sh/devspace/pkg/devspace/config/versions/latest"
-	"github.com/loft-sh/devspace/pkg/devspace/dependency/util"
-	"github.com/loft-sh/devspace/pkg/devspace/docker"
 	"github.com/loft-sh/devspace/pkg/devspace/kubectl"
 	"github.com/loft-sh/devspace/pkg/util/git"
 	"github.com/loft-sh/devspace/pkg/util/kubeconfig"
@@ -28,12 +28,11 @@ import (
 
 // ResolverInterface defines the resolver interface that takes dependency configs and resolves them
 type ResolverInterface interface {
-	Resolve(update bool) ([]*Dependency, error)
+	Resolve(update bool) (*graph, error)
 }
 
 // Resolver implements the resolver interface
 type resolver struct {
-	RootID          string
 	DependencyGraph *graph
 
 	BasePath   string
@@ -72,7 +71,6 @@ func NewResolver(baseConfig config.Config, client kubectl.Client, configOptions 
 	}
 
 	return &resolver{
-		RootID:          id,
 		DependencyGraph: newGraph(newNode(id, nil)),
 
 		BaseConfig: baseConfig.Config(),
@@ -90,7 +88,7 @@ func NewResolver(baseConfig config.Config, client kubectl.Client, configOptions 
 }
 
 // Resolve implements interface
-func (r *resolver) Resolve(update bool) ([]*Dependency, error) {
+func (r *resolver) Resolve(update bool) (*graph, error) {
 	currentWorkingDirectory, err := os.Getwd()
 	if err != nil {
 		return nil, errors.Wrap(err, "get current working directory")
@@ -111,29 +109,29 @@ func (r *resolver) Resolve(update bool) ([]*Dependency, error) {
 		return nil, err
 	}
 
-	return r.buildDependencyQueue()
+	return r.DependencyGraph, nil
 }
 
-func (r *resolver) buildDependencyQueue() ([]*Dependency, error) {
-	retDependencies := make([]*Dependency, 0, len(r.DependencyGraph.Nodes)-1)
+// func (r *resolver) buildDependencyQueue() ([]*Dependency, error) {
+// 	retDependencies := make([]*Dependency, 0, len(r.DependencyGraph.Nodes)-1)
 
-	// build dependency queue
-	for len(r.DependencyGraph.Nodes) > 1 {
-		next := r.DependencyGraph.getNextLeaf(r.DependencyGraph.Root)
-		if next == r.DependencyGraph.Root {
-			break
-		}
+// 	// build dependency queue
+// 	for len(r.DependencyGraph.Nodes) > 1 {
+// 		next := r.DependencyGraph.getNextLeaf(r.DependencyGraph.Root)
+// 		if next == r.DependencyGraph.Root {
+// 			break
+// 		}
 
-		retDependencies = append(retDependencies, next.Data.(*Dependency))
+// 		retDependencies = append(retDependencies, next.Dependency)
 
-		err := r.DependencyGraph.removeNode(next.ID)
-		if err != nil {
-			return nil, err
-		}
-	}
+// 		err := r.DependencyGraph.removeNode(next.ID)
+// 		if err != nil {
+// 			return nil, err
+// 		}
+// 	}
 
-	return retDependencies, nil
-}
+// 	return retDependencies, nil
+// }
 
 func (r *resolver) resolveRecursive(basePath, parentID string, currentDependency *Dependency, dependencies []*latest.DependencyConfig, update bool) error {
 	if currentDependency != nil {
@@ -158,7 +156,7 @@ func (r *resolver) resolveRecursive(basePath, parentID string, currentDependency
 					return err
 				}
 			} else {
-				child = n.Data.(*Dependency)
+				child = n.Dependency
 			}
 		} else {
 			child, err = r.resolveDependency(basePath, dependencyConfig, update)
@@ -205,7 +203,7 @@ func (r *resolver) resolveDependency(basePath string, dependency *latest.Depende
 		return nil, err
 	}
 
-	localPath, err := util.DownloadDependency(ID, basePath, dependency.Source, update, r.log)
+	localPath, err := util.DownloadDependency(basePath, dependency.Source, update, r.log)
 	if err != nil {
 		return nil, err
 	}

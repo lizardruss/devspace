@@ -1,0 +1,13 @@
+version: v1beta10
+deployments:
+- name: child2child1
+  helm:
+    componentChart: true
+    values:
+      containers:
+      - image: nginx
+dependencies:
+  - name: child2child1child1
+    source:
+      path: "."
+      configName: child2child1child1.yaml

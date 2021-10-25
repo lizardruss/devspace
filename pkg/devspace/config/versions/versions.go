@@ -2,11 +2,12 @@ package versions
 
 import (
 	"fmt"
-	"github.com/loft-sh/devspace/pkg/devspace/config/versions/v1beta10"
 	"io/ioutil"
 	"os"
 	"path/filepath"
 	"regexp"
+
+	"github.com/loft-sh/devspace/pkg/devspace/config/versions/v1beta10"
 
 	"github.com/loft-sh/devspace/pkg/devspace/config/constants"
 	"github.com/loft-sh/devspace/pkg/devspace/config/versions/config"
@@ -347,8 +348,7 @@ func getProfiles(basePath string, data map[interface{}]interface{}, profile stri
 					}
 
 					if profileConfig.Parents[i].Source != nil {
-						ID := dependencyutil.GetParentProfileID(basePath, profileConfig.Parents[i].Source, profileConfig.Parents[i].Profile, nil)
-						localPath, err := dependencyutil.DownloadDependency(ID, basePath, profileConfig.Parents[i].Source, update, log)
+						localPath, err := dependencyutil.DownloadDependency(basePath, profileConfig.Parents[i].Source, update, log)
 						if err != nil {
 							return err
 						}

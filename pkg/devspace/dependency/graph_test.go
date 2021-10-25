@@ -1,7 +1,10 @@
 package dependency
 
 import (
+	"fmt"
 	"testing"
+
+	"gotest.tools/assert"
 )
 
 func TestGraph(t *testing.T) {
@@ -58,6 +61,25 @@ rootChild2Child1Child1`
 		t.Fatalf("Wrong path found: %#+v", path)
 	}
 
+	// preOrder traversal
+	expected := []string{"root", "rootChild1", "rootChild2", "rootChild2Child1", "rootChild2Child1Child1", "rootChild3", "rootChild2", "rootChild2Child1", "rootChild2Child1Child1"}
+	actual := []string{}
+	testGraph.preOrderSearch(testGraph.Root, func(n *node) (bool, error) {
+		actual = append(actual, n.ID)
+		return false, nil
+	})
+	assert.DeepEqual(t, expected, actual)
+
+	// postOrder traversal
+	expected = []string{"rootChild1", "rootChild2Child1Child1", "rootChild2Child1", "rootChild2", "rootChild2Child1Child1", "rootChild2Child1", "rootChild2", "rootChild3", "root"}
+	actual = []string{}
+	testGraph.postOrderSearch(testGraph.Root, func(n *node) (bool, error) {
+		actual = append(actual, n.ID)
+		return false, nil
+	})
+	fmt.Println(actual)
+	assert.DeepEqual(t, expected, actual)
+
 	// Get leaf node
 	leaf := testGraph.getNextLeaf(root)
 	if leaf.ID != rootChild1.ID {
@@ -74,21 +96,38 @@ rootChild2Child1Child1`
 		t.Fatal("No error when adding an edge to a non-existing node")
 	}
 
-	// Remove node
-	err = testGraph.removeNode(leaf.ID)
-	if err != nil {
-		t.Fatal(err)
+	// preOrder Seach for 5th item
+	count := 0
+	found, _ := testGraph.preOrderSearch(testGraph.Root, func(n *node) (bool, error) {
+		result := count == 5
+		count++
+		return result, nil
+	})
+	assert.Equal(t, found.ID, "rootChild3")
+
+	// postOrder Search
+	count = 0
+	found, _ = testGraph.postOrderSearch(testGraph.Root, func(n *node) (bool, error) {
+		result := count == 5
+		count++
+		return result, nil
+	})
+	assert.Equal(t, found.ID, "rootChild2Child1")
+
+	// Prune tree until empty
+	expected = []string{"rootChild1", "rootChild2Child1Child1", "rootChild2Child1", "rootChild2", "rootChild3"}
+	actual = []string{}
+
+	for testGraph.len() > 0 {
+		curr := testGraph.getNextLeaf(testGraph.Root)
+		actual = append(actual, curr.ID)
+
+		err := testGraph.removeNode(curr.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
 	}
 
-	// Get leaf node
-	leaf = testGraph.getNextLeaf(root)
-	if leaf.ID != rootChild2Child1Child1.ID {
-		t.Fatalf("GetLeaf2: Got id %s, expected %s", leaf.ID, rootChild2Child1Child1.ID)
-	}
-
-	// Remove node
-	err = testGraph.removeNode(root.ID)
-	if err == nil {
-		t.Fatal("Expected error")
-	}
+	fmt.Println(actual)
+	assert.DeepEqual(t, expected, actual)
 }
