@@ -166,6 +166,7 @@ module.exports = {
           ],
         },
         'configuration/pullSecrets/README',
+        'configuration/localRegistry/README',
         'configuration/require/README',
         'configuration/variables',
         'configuration/expressions',
